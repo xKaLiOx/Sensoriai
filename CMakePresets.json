@@ -1,0 +1,22 @@
+{
+    "version": 2,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 20
+    },
+    "configurePresets": [
+        {
+            "name": "build",
+            "displayName": "Build for nRF54l15 DK nRF54l15 Application",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "NCS_TOOLCHAIN_VERSION": "NONE",
+                "BOARD": "nrf54l15dk/nrf54l15/cpuapp",
+                "CONFIG_DEBUG_OPTIMIZATIONS": true,
+                "CONFIG_DEBUG_THREAD_INFO": true,
+                "BOARD_ROOT": "$env{ZEPHYR_BASE}/../sensoriai;$env{ZEPHYR_BASE}/../timer_with_blinky"
+            }
+        }
+    ]
+}
