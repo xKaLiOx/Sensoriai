@@ -19,34 +19,11 @@
 
 #include <nrfx_timer.h>
 
+#include "main.h"
 // for calculating
-#define p1_coefficient 1.8718
-#define p2_coefficient 12.3130
-#define p3_coefficient 17.6750
 
-#define SLEEP_TIME_MS 1
-#define REFRESH_RATE 1000 // every 1s
-#define TIMER_FREQ_HZ 16000000
-#define BUFFER_SIZE 5 
-
-uint16_t Impulse_counter = 0;
-volatile float radiation = 0;
-volatile float radiation_circular[BUFFER_SIZE] = {0}; //Ciklinis buferis kai reiksmes mazai skiriasi, kai atsiranda didelis pokytis tarp imciu, rodyt momentini
-volatile uint8_t buffer_cnt = 0;
-
-
-void timer21_int_callback(nrf_timer_event_t event_type, void *p_context);
-static bool timer21_init(void);
-void button_pressed(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
-float Impulses_to_uRoentgenPerSecond(uint16_t impulse_count);
-float uRoentgenPerSecondTouSievertsPerHour(float radiation);
-
-struct moving_average
-{
-	uint8_t counter;
-	float sum;
-	float buffer[BUFFER_SIZE];
-} MA_FILTER;
+K_THREAD_STACK_DEFINE(my_thread_stack, STACK_SIZE);
+K_THREAD_STACK_DEFINE(my_workqueue_stack, STACK_SIZE);
 
 /*
  * Get button configuration from the devicetree sw0 alias. This is mandatory.
@@ -55,63 +32,40 @@ struct moving_average
 
 static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET_OR(SW0_NODE, gpios, {0});
 static const struct gpio_dt_spec buzzer = GPIO_DT_SPEC_GET(DT_N_NODELABEL_my_buzzer_external, buzzer_gpios);
-
 static struct gpio_callback button_cb_data;
-static const nrfx_timer_t my_timer = NRFX_TIMER_INSTANCE(21);
+
 static struct gpio_dt_spec led = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led0), gpios, {0});
+static const nrfx_timer_t my_timer = NRFX_TIMER_INSTANCE(21);
 
 int main(void)
 {
+	k_work_queue_start(&my_workqueue_data,my_workqueue_stack,K_THREAD_STACK_SIZEOF(my_workqueue_stack),6,NULL);
+	k_work_init(&my_work, work_function);
+	printk("Workqueue started\n");
+
+	k_sem_init(&semaphore_update_timer,0,1);
+	k_thread_create(&my_thread_data, my_thread_stack,
+                    K_THREAD_STACK_SIZEOF(my_thread_stack),
+                    calculation_thread,
+                    NULL, NULL, NULL,
+                    THREAD_PRIORITY, 0, K_NO_WAIT);
+					
 	for(uint8_t x = 0; x<BUFFER_SIZE;x++) // Clear buffer
 	{
 		MA_FILTER.buffer[x] = 0;
 	}
 	int ret;
 
-
-	if (!gpio_is_ready_dt(&button))
+	ret = initialise_gpio_timer_button();
+	if(ret != 1)
 	{
-		printk("Error: button device %s is not ready\n",
-			   button.port->name);
-		return 0;
+		printk("ERROR");
+		while(1)
+		{
+		};
 	}
-	if (!device_is_ready(buzzer.port))
-	{
-		printk("Buzzer GPIO device not ready\n");
-		return 0;
-	}
-	ret = gpio_pin_configure_dt(&button, GPIO_INPUT);
-	if (ret != 0)
-	{
-		printk("Error configuring button pin\n");
-		return 0;
-	}
-	ret = gpio_pin_configure_dt(&buzzer, GPIO_OUTPUT_INACTIVE);
-	if (ret != 0)
-	{
-		printk("Error configuring buzzer pin\n");
-		return 0;
-	}
-	if (ret != 0)
-	{
-		printk("Error %d: failed to configure %s pin %d\n",
-			   ret, button.port->name, button.pin);
-		return 0;
-	}
-
-	ret = gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_TO_ACTIVE);
-	if (ret != 0)
-	{
-		printk("Error %d: failed to configure interrupt on %s pin %d\n",
-			   ret, button.port->name, button.pin);
-		return 0;
-	}
-
-	gpio_init_callback(&button_cb_data, button_pressed, BIT(button.pin));
-	gpio_add_callback(button.port, &button_cb_data);
-	printk("Set up button at %s pin %d\n", button.port->name, button.pin);
-
-	if (led.port && !gpio_is_ready_dt(&led))
+	
+		if (led.port && !gpio_is_ready_dt(&led))
 	{
 		printk("Error %d: LED device %s is not ready; ignoring it\n",
 			   ret, led.port->name);
@@ -131,6 +85,11 @@ int main(void)
 			printk("Set up LED at %s pin %d\n", led.port->name, led.pin);
 		}
 	}
+
+	gpio_init_callback(&button_cb_data, button_pressed, BIT(button.pin));
+	gpio_add_callback(button.port, &button_cb_data);
+	printk("Set up button at %s pin %d\n", button.port->name, button.pin);
+
 	//Start buzzer for 1s
 	gpio_pin_set_dt(&buzzer, 1);
 	k_msleep(1000);
@@ -142,6 +101,7 @@ int main(void)
 	{
 		while (1)
 		{
+			k_sleep(K_MSEC(1000)); //rtos, kad superloop neblokuotu giju
 		}
 	}
 	return 0;
@@ -160,33 +120,19 @@ void timer21_int_callback(nrf_timer_event_t event_type, void *p_context)
 	switch (event_type)
 	{
 	case NRF_TIMER_EVENT_COMPARE0:
- 		radiation = uRoentgenPerSecondTouSievertsPerHour(Impulses_to_uRoentgenPerSecond(Impulse_counter));
-		MA_FILTER.sum += radiation;
-		MA_FILTER.buffer[MA_FILTER.counter] = radiation;
+		MA_FILTER.impulse_sum += Impulse_counter;
+		MA_FILTER.buffer[MA_FILTER.counter] = Impulse_counter;
 		MA_FILTER.counter++;
 		MA_FILTER.counter %=BUFFER_SIZE;
-		if(radiation > 200) // jei daugiau, rodomi impulsai, kitu atveju rodomas slenkancio vidurkio atsakymas
+		if(Impulse_counter > 10) // jei daugiau nei 10 per sekunde impulsu, rodomi momentiniai skaiciavimai, kitu atveju rodomas slenkancio vidurkio atsakymas
 		{
 			for(uint8_t x = 0; x<BUFFER_SIZE;x++)
 			{
-				MA_FILTER.buffer[x] = radiation;
+				MA_FILTER.buffer[x] = Impulse_counter;
 			}
-			MA_FILTER.sum = BUFFER_SIZE*radiation;
+			MA_FILTER.impulse_sum = BUFFER_SIZE*Impulse_counter;
 		}
-		static uint32_t timestamp;
-		timestamp = k_cycle_get_32();
-		radiation = MA_FILTER.sum/BUFFER_SIZE;
-		int int_part = (int)radiation;
-		int frac_part = (int)((radiation - int_part) * 10.0);
-		printk("tim %d callback, radiation = %d.%1d at %u\r\n",buffer_cnt, int_part, frac_part, timestamp);
-		Impulse_counter = 0;
-		MA_FILTER.sum -= MA_FILTER.buffer[MA_FILTER.counter];//slankusis, priekyje esancia verte atimti, taciau po to, kai atlikti skaiciavimai, nes tada paimsim tik 4
-		
-		if(radiation > 500)
-		{
-			gpio_pin_set_dt(&buzzer,1); // kaukia software buzzer
-		}
-		else gpio_pin_set_dt(&buzzer,0);
+		k_work_submit_to_queue(&my_workqueue_data,&my_work);
 		break;
 
 	default:
@@ -235,15 +181,104 @@ bool timer21_init(void)
 
 
 
-float Impulses_to_uRoentgenPerSecond(uint16_t impulse_count) // grafikas scaled
+float Impulses_to_uRoentgenPer30Second(uint16_t impulse_count) // grafikas scaled
 {
 	uint16_t xmean = 1248;
 	double stdev = 610.8, X_NORM, radiation;
 	X_NORM = ((impulse_count - xmean) * 1.0) / stdev;
-	radiation = p1_coefficient * X_NORM * X_NORM + p2_coefficient * X_NORM + p3_coefficient;
+	radiation = p1_coefficient * X_NORM * X_NORM * X_NORM + p2_coefficient * X_NORM*X_NORM + p3_coefficient*X_NORM +p4_coefficient;
 	return radiation;
+	//buffer 30s, tai gauname mikrorentgena per 30s
 }
-float uRoentgenPerSecondTouSievertsPerHour(float radiation)
+float uRoentgenPer30SecondTouSievertsPerHour(float radiation)
 {
-	return radiation * 32;
+	return radiation*2*60/115;
+}
+
+void calculation_thread(void *arg1, void *arg2, void *arg3)
+{
+    printk("Calculation thread started\r\n");
+    while (1) {
+		k_sem_take(&semaphore_update_timer, K_FOREVER);//LAUKIAMA semaforo is taimerio, po to atliekami skaiciavimai siame
+
+
+		static uint32_t timestamp;
+		timestamp = k_cycle_get_32();
+		radiation = uRoentgenPer30SecondTouSievertsPerHour(Impulses_to_uRoentgenPer30Second(MA_FILTER.impulse_sum)); // per 30 sekundziu gauta radiacija
+		if(radiation < 1)// konvertuojame i  nanosievertus
+		{
+			Indication_value = NANO;
+			radiation = radiation*1000;
+		}
+		else
+		{
+			Indication_value = MICRO;
+		}
+		int int_part = (int)radiation;
+		int frac_part = (int)((radiation - int_part) * (float)10.0);
+		if(Indication_value == MICRO)
+		{
+			printk("tim callback, radiation(MICRO) = %d.%1d at %u\r\n", int_part, frac_part, timestamp);
+		}
+		else
+		{
+			printk("tim callback, radiation(NANO) = %d.%1d at %u\r\n", int_part, frac_part, timestamp);
+		}
+
+		Impulse_counter = 0;
+		MA_FILTER.impulse_sum -= MA_FILTER.buffer[MA_FILTER.counter];//slankusis, priekyje esancia verte atimti, taciau po to, kai atlikti skaiciavimai, nes tada paimsim tik 4
+		
+	    if(Impulse_counter > 10) // kai per sekunde daugiau nei 10 impulsu
+		{
+			gpio_pin_set_dt(&buzzer,1); // kaukia software buzzer
+		}
+		else gpio_pin_set_dt(&buzzer,0);
+    }
+}
+
+void work_function(struct k_work *work)
+{
+	k_sem_give(&semaphore_update_timer);//WORKQUEUE gija duoda semafora, jog kita gija galetu atlikti skaiciavimus, daroma sitaip, nes per ISR negalima iskviesti kitos gijos (0 prioritetas)
+}
+
+uint8_t initialise_gpio_timer_button()
+{
+	uint8_t ret = 1;
+		if (!gpio_is_ready_dt(&button))
+	{
+		printk("Error: button device %s is not ready\n",
+			   button.port->name);
+		return 0;
+	}
+	if (!device_is_ready(buzzer.port))
+	{
+		printk("Buzzer GPIO device not ready\n");
+		return 0;
+	}
+	ret = gpio_pin_configure_dt(&button, GPIO_INPUT);
+	if (ret != 0)
+	{
+		printk("Error configuring button pin\n");
+		return 0;
+	}
+	ret = gpio_pin_configure_dt(&buzzer, GPIO_OUTPUT_INACTIVE);
+	if (ret != 0)
+	{
+		printk("Error configuring buzzer pin\n");
+		return 0;
+	}
+	if (ret != 0)
+	{
+		printk("Error %d: failed to configure %s pin %d\n",
+			   ret, button.port->name, button.pin);
+		return 0;
+	}
+	ret = gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_TO_ACTIVE);
+	if (ret != 0)
+	{
+		printk("Error %d: failed to configure interrupt on %s pin %d\n",
+			   ret, button.port->name, button.pin);
+		return 0;
+	}
+	return 1;
 }
