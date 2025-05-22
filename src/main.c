@@ -9,6 +9,12 @@
  * example instead.
  */
 
+#include <zephyr/types.h>
+#include <stddef.h>
+#include <string.h>
+#include <errno.h>
+#include <soc.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
@@ -16,8 +22,17 @@
 #include <zephyr/sys/printk.h>
 #include <inttypes.h>
 #include <zephyr/irq.h>
-
 #include <nrfx_timer.h>
+
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <bluetooth/services/nsms.h>
+#include <bluetooth/services/lbs.h>
+
+#include <zephyr/settings/settings.h>
 
 #include "main.h"
 // for calculating
@@ -28,6 +43,8 @@ K_THREAD_STACK_DEFINE(my_workqueue_stack, STACK_SIZE);
 /*
  * Get button configuration from the devicetree sw0 alias. This is mandatory.
  */
+#define DEVICE_NAME             CONFIG_BT_DEVICE_NAME
+#define DEVICE_NAME_LEN         (sizeof(DEVICE_NAME) - 1)
 #define SW0_NODE DT_ALIAS(sw0)
 
 static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET_OR(SW0_NODE, gpios, {0});
@@ -35,7 +52,33 @@ static const struct gpio_dt_spec buzzer = GPIO_DT_SPEC_GET(DT_N_NODELABEL_my_buz
 static struct gpio_callback button_cb_data;
 
 static struct gpio_dt_spec led = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led0), gpios, {0});
+static struct gpio_dt_spec led_BT_conn_status = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led3), gpios, {0}); // BT run LED
 static const nrfx_timer_t my_timer = NRFX_TIMER_INSTANCE(21);
+
+static const struct bt_data ad[] = {
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+};
+
+static const struct bt_data sd[] = {
+	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_LBS_VAL),
+};
+
+static struct bt_lbs_cb lbs_callbacks = {
+	.led_cb = app_led_cb,
+};
+
+
+BT_CONN_CB_DEFINE(conn_callbacks) = {
+	.connected        = connected,
+	.disconnected     = disconnected,
+#ifdef CONFIG_BT_LBS_SECURITY_ENABLED
+	.security_changed = security_changed,
+#endif
+};
+
+//static struct bt_conn_auth_cb conn_auth_callbacks;
+//static struct bt_conn_auth_info_cb conn_auth_info_callbacks;
 
 int main(void)
 {
@@ -65,6 +108,26 @@ int main(void)
 		};
 	}
 	
+			if (led_BT_conn_status.port && !gpio_is_ready_dt(&led_BT_conn_status))
+	{
+		printk("Error %d: led_BT_conn_status device %s is not ready; ignoring it\n",
+			   ret, led_BT_conn_status.port->name);
+		led_BT_conn_status.port = NULL;
+	}
+		if (led_BT_conn_status.port)
+	{
+		ret = gpio_pin_configure_dt(&led_BT_conn_status, GPIO_OUTPUT);
+		if (ret != 0)
+		{
+			printk("Error %d: failed to configure LED device %s pin %d\n",
+				   ret, led_BT_conn_status.port->name, led_BT_conn_status.pin);
+			led_BT_conn_status.port = NULL;
+		}
+		else
+		{
+			printk("Set up LED at %s pin %d\n", led_BT_conn_status.port->name, led_BT_conn_status.pin);
+		}
+	}
 		if (led.port && !gpio_is_ready_dt(&led))
 	{
 		printk("Error %d: LED device %s is not ready; ignoring it\n",
@@ -97,6 +160,31 @@ int main(void)
 
 	timer21_init();
 
+	int err = bt_enable(NULL);
+	if (err) {
+		printk("Bluetooth init failed (err %d)\n", err);
+		return 0;
+	}
+	printk("Bluetooth initialized\n");
+
+/* 		if (IS_ENABLED(CONFIG_SETTINGS)) {
+		settings_load();
+	} */
+		err = bt_lbs_init(&lbs_callbacks);
+	if (err) {
+		printk("Failed to init LBS (err:%d)\n", err);
+		return 0;
+	}
+
+		err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad),
+			      sd, ARRAY_SIZE(sd));
+	if (err) {
+		printk("Advertising failed to start (err %d)\n", err);
+		return 0;
+	}
+
+	printk("Advertising successfully started\n");
+
 	if (led.port)
 	{
 		while (1)
@@ -124,7 +212,7 @@ void timer21_int_callback(nrf_timer_event_t event_type, void *p_context)
 		MA_FILTER.buffer[MA_FILTER.counter] = Impulse_counter;
 		MA_FILTER.counter++;
 		MA_FILTER.counter %=BUFFER_SIZE;
-		if(Impulse_counter > 10) // jei daugiau nei 10 per sekunde impulsu, rodomi momentiniai skaiciavimai, kitu atveju rodomas slenkancio vidurkio atsakymas
+		if(Impulse_counter > IMPULSE_THRESHOLD_HIGH) // jei daugiau nei 10 per sekunde impulsu, rodomi momentiniai skaiciavimai, kitu atveju rodomas slenkancio vidurkio atsakymas
 		{
 			for(uint8_t x = 0; x<BUFFER_SIZE;x++)
 			{
@@ -281,4 +369,28 @@ uint8_t initialise_gpio_timer_button()
 		return 0;
 	}
 	return 1;
+}
+
+static void connected(struct bt_conn *conn, uint8_t err)
+{
+	if (err) {
+		printk("Connection failed, err 0x%02x %s\n", err, bt_hci_err_to_str(err));
+		return;
+	}
+
+	printk("Connected\n");
+
+	gpio_pin_set(led_BT_conn_status.port,led_BT_conn_status.pin,GPIO_ACTIVE_LOW);
+}
+
+static void disconnected(struct bt_conn *conn, uint8_t reason)
+{
+	printk("Disconnected, reason 0x%02x %s\n", reason, bt_hci_err_to_str(reason));
+
+	gpio_pin_set(led_BT_conn_status.port,led_BT_conn_status.pin,GPIO_ACTIVE_HIGH);
+}
+
+static void app_led_cb(bool val)
+{
+	printk("SMTH happening\n");
 }

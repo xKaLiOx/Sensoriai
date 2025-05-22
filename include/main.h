@@ -9,6 +9,7 @@
 #define REFRESH_RATE 1000 // every 1s
 #define TIMER_FREQ_HZ 16000000
 #define BUFFER_SIZE 30
+#define IMPULSE_THRESHOLD_HIGH 10
 
 #define STACK_SIZE 2048
 #define THREAD_PRIORITY 5
@@ -35,5 +36,8 @@ float uRoentgenPer30SecondTouSievertsPerHour(float radiation);
 void calculation_thread(void *arg1, void *arg2, void *arg3);
 void work_function(struct k_work *work);
 uint8_t initialise_gpio_timer_button();
+static void connected(struct bt_conn *conn, uint8_t err);
+static void disconnected(struct bt_conn *conn, uint8_t err);
+static void app_led_cb(bool val);
 
 struct k_sem semaphore_update_timer;
