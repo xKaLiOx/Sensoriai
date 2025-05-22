@@ -14,30 +14,43 @@
 #define STACK_SIZE 2048
 #define THREAD_PRIORITY 5
 
-struct k_thread my_thread_data;
-struct k_work_q my_workqueue_data;
-struct k_work my_work;
+#define BUF_SIZE 64 //BT message size
 
-volatile uint16_t Impulse_counter = 0;
-volatile float radiation = 0;
 struct moving_average
 {
 	uint8_t counter;
 	uint16_t impulse_sum;
 	uint16_t buffer[BUFFER_SIZE];
 } MA_FILTER;
-enum indicator_value {NANO, MICRO} Indication_value = MICRO;
+enum indicator_value {NANO, MICRO} Indication_value = NANO;
+char indicator_name[2][10] = {"nSv/h", "uSv/h"};
 
-void timer21_int_callback(nrf_timer_event_t event_type, void *p_context);
-static bool timer21_init(void);
+struct k_thread my_thread_data;
+struct k_work_q my_workqueue_data;
+struct k_work my_work;
+
+struct bt_update_payload {
+	float radiation;
+	enum indicator_value indication;
+};
+static struct k_work bt_update_work;
+
+volatile uint16_t Impulse_counter = 0;
+volatile float radiation = 0;
+volatile bool BT_connected;
+
 void button_pressed(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
 float Impulses_to_uRoentgenPer30Second(uint16_t impulse_count);
 float uRoentgenPer30SecondTouSievertsPerHour(float radiation);
+
+void timer21_int_callback(nrf_timer_event_t event_type, void *p_context);
+static bool timer21_init(void);
 void calculation_thread(void *arg1, void *arg2, void *arg3);
 void work_function(struct k_work *work);
 uint8_t initialise_gpio_timer_button();
+struct k_sem semaphore_update_timer;
+
 static void connected(struct bt_conn *conn, uint8_t err);
 static void disconnected(struct bt_conn *conn, uint8_t err);
-static void app_led_cb(bool val);
+static void bt_update_handler(struct k_work *work);
 
-struct k_sem semaphore_update_timer;

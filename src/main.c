@@ -14,6 +14,8 @@
 #include <string.h>
 #include <errno.h>
 #include <soc.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -40,6 +42,32 @@
 K_THREAD_STACK_DEFINE(my_thread_stack, STACK_SIZE);
 K_THREAD_STACK_DEFINE(my_workqueue_stack, STACK_SIZE);
 
+BT_NSMS_DEF(nsms_radiation, "Radiation", false, "Unknown", BUF_SIZE);
+BT_NSMS_DEF(nsms_radiation_unit, "Units", false, "nSv/h", 10);
+
+static bool send_value_bt(float value, enum indicator_value indication)
+{
+	if(!BT_connected)
+	{
+		return false;
+	}
+	char msg[20];
+	sprintf(msg,"%1.1f",(double)value);
+	int err = 0;
+	err = bt_nsms_set_status(&nsms_radiation, msg);
+	if (err != 0) {
+		printk("NSMS set radiation failed, err: %d\n", err);
+		return false;
+	}
+	sprintf(msg,"%s",indicator_name[indication]);
+	err = bt_nsms_set_status(&nsms_radiation_unit, msg);
+	if (err != 0) {
+		printk("NSMS set unit failed, err: %d\n", err);
+		return false;
+	}
+	return true;
+}
+
 /*
  * Get button configuration from the devicetree sw0 alias. This is mandatory.
  */
@@ -55,28 +83,22 @@ static struct gpio_dt_spec led = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led0), gpios, {0})
 static struct gpio_dt_spec led_BT_conn_status = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led3), gpios, {0}); // BT run LED
 static const nrfx_timer_t my_timer = NRFX_TIMER_INSTANCE(21);
 
+static struct bt_update_payload bt_payload;
+static struct k_work bt_update_work;
+
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
 	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
 };
 
 static const struct bt_data sd[] = {
-	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_LBS_VAL),
+	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_NSMS_VAL),
 };
-
-static struct bt_lbs_cb lbs_callbacks = {
-	.led_cb = app_led_cb,
-};
-
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected        = connected,
 	.disconnected     = disconnected,
-#ifdef CONFIG_BT_LBS_SECURITY_ENABLED
-	.security_changed = security_changed,
-#endif
 };
-
 //static struct bt_conn_auth_cb conn_auth_callbacks;
 //static struct bt_conn_auth_info_cb conn_auth_info_callbacks;
 
@@ -84,6 +106,7 @@ int main(void)
 {
 	k_work_queue_start(&my_workqueue_data,my_workqueue_stack,K_THREAD_STACK_SIZEOF(my_workqueue_stack),6,NULL);
 	k_work_init(&my_work, work_function);
+	k_work_init(&bt_update_work, bt_update_handler);
 	printk("Workqueue started\n");
 
 	k_sem_init(&semaphore_update_timer,0,1);
@@ -108,46 +131,7 @@ int main(void)
 		};
 	}
 	
-			if (led_BT_conn_status.port && !gpio_is_ready_dt(&led_BT_conn_status))
-	{
-		printk("Error %d: led_BT_conn_status device %s is not ready; ignoring it\n",
-			   ret, led_BT_conn_status.port->name);
-		led_BT_conn_status.port = NULL;
-	}
-		if (led_BT_conn_status.port)
-	{
-		ret = gpio_pin_configure_dt(&led_BT_conn_status, GPIO_OUTPUT);
-		if (ret != 0)
-		{
-			printk("Error %d: failed to configure LED device %s pin %d\n",
-				   ret, led_BT_conn_status.port->name, led_BT_conn_status.pin);
-			led_BT_conn_status.port = NULL;
-		}
-		else
-		{
-			printk("Set up LED at %s pin %d\n", led_BT_conn_status.port->name, led_BT_conn_status.pin);
-		}
-	}
-		if (led.port && !gpio_is_ready_dt(&led))
-	{
-		printk("Error %d: LED device %s is not ready; ignoring it\n",
-			   ret, led.port->name);
-		led.port = NULL;
-	}
-	if (led.port)
-	{
-		ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT);
-		if (ret != 0)
-		{
-			printk("Error %d: failed to configure LED device %s pin %d\n",
-				   ret, led.port->name, led.pin);
-			led.port = NULL;
-		}
-		else
-		{
-			printk("Set up LED at %s pin %d\n", led.port->name, led.pin);
-		}
-	}
+	
 
 	gpio_init_callback(&button_cb_data, button_pressed, BIT(button.pin));
 	gpio_add_callback(button.port, &button_cb_data);
@@ -166,15 +150,6 @@ int main(void)
 		return 0;
 	}
 	printk("Bluetooth initialized\n");
-
-/* 		if (IS_ENABLED(CONFIG_SETTINGS)) {
-		settings_load();
-	} */
-		err = bt_lbs_init(&lbs_callbacks);
-	if (err) {
-		printk("Failed to init LBS (err:%d)\n", err);
-		return 0;
-	}
 
 		err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad),
 			      sd, ARRAY_SIZE(sd));
@@ -268,7 +243,6 @@ bool timer21_init(void)
 }
 
 
-
 float Impulses_to_uRoentgenPer30Second(uint16_t impulse_count) // grafikas scaled
 {
 	uint16_t xmean = 1248;
@@ -312,7 +286,9 @@ void calculation_thread(void *arg1, void *arg2, void *arg3)
 		{
 			printk("tim callback, radiation(NANO) = %d.%1d at %u\r\n", int_part, frac_part, timestamp);
 		}
-
+		bt_payload.radiation = radiation;
+		bt_payload.indication = Indication_value;
+		k_work_submit(&bt_update_work);
 		Impulse_counter = 0;
 		MA_FILTER.impulse_sum -= MA_FILTER.buffer[MA_FILTER.counter];//slankusis, priekyje esancia verte atimti, taciau po to, kai atlikti skaiciavimai, nes tada paimsim tik 4
 		
@@ -368,6 +344,50 @@ uint8_t initialise_gpio_timer_button()
 			   ret, button.port->name, button.pin);
 		return 0;
 	}
+	if (led_BT_conn_status.port && !gpio_is_ready_dt(&led_BT_conn_status))
+	{
+		printk("Error %d: led_BT_conn_status device %s is not ready; ignoring it\n",
+			   ret, led_BT_conn_status.port->name);
+		led_BT_conn_status.port = NULL;
+		return 0;
+	}
+		if (led_BT_conn_status.port)
+	{
+		ret = gpio_pin_configure_dt(&led_BT_conn_status, GPIO_OUTPUT);
+		if (ret != 0)
+		{
+			printk("Error %d: failed to configure LED device %s pin %d\n",
+				   ret, led_BT_conn_status.port->name, led_BT_conn_status.pin);
+			led_BT_conn_status.port = NULL;
+			return 0;
+		}
+		else
+		{
+			printk("Set up LED at %s pin %d\n", led_BT_conn_status.port->name, led_BT_conn_status.pin);
+		}
+	}
+		if (led.port && !gpio_is_ready_dt(&led))
+	{
+		printk("Error %d: LED device %s is not ready; ignoring it\n",
+			   ret, led.port->name);
+		led.port = NULL;
+		return 0;
+	}
+	if (led.port)
+	{
+		ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT);
+		if (ret != 0)
+		{
+			printk("Error %d: failed to configure LED device %s pin %d\n",
+				   ret, led.port->name, led.pin);
+			led.port = NULL;
+			return 0;
+		}
+		else
+		{
+			printk("Set up LED at %s pin %d\n", led.port->name, led.pin);
+		}
+	}
 	return 1;
 }
 
@@ -381,6 +401,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	printk("Connected\n");
 
 	gpio_pin_set(led_BT_conn_status.port,led_BT_conn_status.pin,GPIO_ACTIVE_LOW);
+	BT_connected = true;
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
@@ -388,9 +409,10 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	printk("Disconnected, reason 0x%02x %s\n", reason, bt_hci_err_to_str(reason));
 
 	gpio_pin_set(led_BT_conn_status.port,led_BT_conn_status.pin,GPIO_ACTIVE_HIGH);
+	BT_connected = false;
 }
 
-static void app_led_cb(bool val)
+static void bt_update_handler(struct k_work *work)
 {
-	printk("SMTH happening\n");
+	send_value_bt(bt_payload.radiation,bt_payload.indication);
 }
