@@ -46,12 +46,19 @@ K_THREAD_STACK_DEFINE(my_workqueue_stack, STACK_SIZE);
 BT_NSMS_DEF(nsms_radiation, "Radiation", false, "Unknown", BUF_SIZE);
 BT_NSMS_DEF(nsms_radiation_unit, "Units", false, "nSv/h", 10);
 
+#define BT_UUID_RAD_SVC_VAL BT_UUID_128_ENCODE(0xd49e121c, 0x3893, 0x11f0, 0xa345, 0x325096b39f47) // custom UUID for SVC
+#define BT_UUID_RAD_VAL BT_UUID_128_ENCODE(0xd49e121d, 0x3893, 0x11f0, 0xa345, 0x325096b39f47)	   // custom UUID for radiation value
+#define BT_UUID_RAD_IDX BT_UUID_128_ENCODE(0xd49e121e, 0x3893, 0x11f0, 0xa345, 0x325096b39f47)	   // custom UUID for radiation index
+
+#define BT_UUID_RAD_SVC BT_UUID_DECLARE_128(BT_UUID_RAD_SVC_VAL)
+#define BT_UUID_RAD BT_UUID_DECLARE_128(BT_UUID_RAD_VAL)
+#define BT_UUID_IDX BT_UUID_DECLARE_128(BT_UUID_RAD_IDX)
 
 /*
  * Get button configuration from the devicetree sw0 alias. This is mandatory.
  */
-#define DEVICE_NAME             CONFIG_BT_DEVICE_NAME
-#define DEVICE_NAME_LEN         (sizeof(DEVICE_NAME) - 1)
+#define DEVICE_NAME CONFIG_BT_DEVICE_NAME
+#define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
 #define SW0_NODE DT_ALIAS(sw0)
 
 static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET_OR(SW0_NODE, gpios, {0});
@@ -65,7 +72,21 @@ static const nrfx_timer_t my_timer = NRFX_TIMER_INSTANCE(21);
 static struct bt_update_payload bt_payload;
 static struct k_work bt_update_work;
 struct bt_conn_info info;
-struct bt_conn* my_conn;
+struct bt_conn *my_conn;
+
+BT_GATT_SERVICE_DEFINE(my_radiation_svc, BT_GATT_PRIMARY_SERVICE(BT_UUID_RAD_SVC),
+					   BT_GATT_CHARACTERISTIC(BT_UUID_RAD,
+											  BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+											  BT_GATT_PERM_READ | BT_GATT_PERM_NONE, bt_read_radiation_value, NULL,
+											  &bt_payload.radiation),
+					   BT_GATT_CCC(myRadiation_ccc_cfg_changed,
+								   BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+					   BT_GATT_CHARACTERISTIC(BT_UUID_IDX,
+											  BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+											  BT_GATT_PERM_READ | BT_GATT_PERM_NONE, bt_read_radiation_format, NULL,
+											  &bt_payload.indication),
+					   BT_GATT_CCC(myRadiation_ccc_cfg_changed,
+								   BT_GATT_PERM_READ | BT_GATT_PERM_WRITE));
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -73,16 +94,17 @@ static const struct bt_data ad[] = {
 };
 
 static const struct bt_data sd[] = {
-	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_NSMS_VAL),
+	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_RAD_SVC_VAL),
 };
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
-	.connected        = connected,
-	.disconnected     = disconnected,
-	.le_param_req     = bt_param_requirements,
+	.connected = connected,
+	.disconnected = disconnected,
+	.le_param_req = bt_param_requirements,
 	.le_param_updated = bt_param_updates
+
 };
-static struct bt_conn_auth_cb conn_auth_callbacks  = {
+static struct bt_conn_auth_cb conn_auth_callbacks = {
 	.passkey_display = NULL,
 	.passkey_confirm = NULL,
 	.cancel = auth_cancel,
@@ -91,34 +113,34 @@ static struct bt_conn_auth_cb conn_auth_callbacks  = {
 };
 static struct bt_conn_auth_info_cb conn_auth_info_callbacks = {
 	.pairing_complete = pairing_complete,
-	.pairing_failed = pairing_failed
-};
+	.pairing_failed = pairing_failed};
 
 int main(void)
 {
-	k_work_queue_start(&my_workqueue_data,my_workqueue_stack,K_THREAD_STACK_SIZEOF(my_workqueue_stack),6,NULL);
+	printk("hello\n");
+	k_work_queue_start(&my_workqueue_data, my_workqueue_stack, K_THREAD_STACK_SIZEOF(my_workqueue_stack), 6, NULL);
 	k_work_init(&my_work, work_function);
 	k_work_init(&bt_update_work, bt_update_handler);
 	printk("Workqueue started\n");
 
-	k_sem_init(&semaphore_update_timer,0,1);
+	k_sem_init(&semaphore_update_timer, 0, 1);
 	k_thread_create(&my_thread_data, my_thread_stack,
-                    K_THREAD_STACK_SIZEOF(my_thread_stack),
-                    calculation_thread,
-                    NULL, NULL, NULL,
-                    THREAD_PRIORITY, 0, K_NO_WAIT);
-					
-	for(uint8_t x = 0; x<BUFFER_SIZE;x++) // Clear buffer
+					K_THREAD_STACK_SIZEOF(my_thread_stack),
+					calculation_thread,
+					NULL, NULL, NULL,
+					THREAD_PRIORITY, 0, K_NO_WAIT);
+
+	for (uint8_t x = 0; x < BUFFER_SIZE; x++) // Clear buffer
 	{
 		MA_FILTER.buffer[x] = 0;
 	}
 	int ret;
 
 	ret = initialise_gpio_timer_button();
-	if(ret != 1)
+	if (ret != 1)
 	{
 		printk("ERROR");
-		while(1)
+		while (1)
 		{
 		};
 	}
@@ -127,7 +149,7 @@ int main(void)
 	gpio_add_callback(button.port, &button_cb_data);
 	printk("Set up button at %s pin %d\n", button.port->name, button.pin);
 
-	//Start buzzer for 1s
+	// Start buzzer for 1s
 	gpio_pin_set_dt(&buzzer, 1);
 	k_msleep(1000);
 	gpio_pin_set_dt(&buzzer, 0);
@@ -135,16 +157,13 @@ int main(void)
 	timer21_init();
 
 	int err = bt_enable(bt_ready);
-	if (err) {
+	if (err)
+	{
 		printk("Bluetooth init failed (err %d)\n", err);
 	}
-
-	if (led.port)
+	while(1)
 	{
-		while (1)
-		{
-			k_sleep(K_MSEC(1000)); //rtos, kad superloop neblokuotu giju
-		}
+		k_sleep(K_SECONDS(5));
 	}
 	return 0;
 }
@@ -165,23 +184,22 @@ void timer21_int_callback(nrf_timer_event_t event_type, void *p_context)
 		MA_FILTER.impulse_sum += Impulse_counter;
 		MA_FILTER.buffer[MA_FILTER.counter] = Impulse_counter;
 		MA_FILTER.counter++;
-		MA_FILTER.counter %=BUFFER_SIZE;
-		if(Impulse_counter > IMPULSE_THRESHOLD_HIGH) // jei daugiau nei 10 per sekunde impulsu, rodomi momentiniai skaiciavimai, kitu atveju rodomas slenkancio vidurkio atsakymas
+		MA_FILTER.counter %= BUFFER_SIZE;
+		if (Impulse_counter > IMPULSE_THRESHOLD_HIGH) // jei daugiau nei 10 per sekunde impulsu, rodomi momentiniai skaiciavimai, kitu atveju rodomas slenkancio vidurkio atsakymas
 		{
-			for(uint8_t x = 0; x<BUFFER_SIZE;x++)
+			for (uint8_t x = 0; x < BUFFER_SIZE; x++)
 			{
 				MA_FILTER.buffer[x] = Impulse_counter;
 			}
-			MA_FILTER.impulse_sum = BUFFER_SIZE*Impulse_counter;
+			MA_FILTER.impulse_sum = BUFFER_SIZE * Impulse_counter;
 		}
-		k_work_submit_to_queue(&my_workqueue_data,&my_work);
+		k_work_submit_to_queue(&my_workqueue_data, &my_work);
 		break;
 
 	default:
 		break;
 	}
 }
-
 
 bool timer21_init(void)
 {
@@ -221,35 +239,34 @@ bool timer21_init(void)
 	return true;
 }
 
-
 float Impulses_to_uRoentgenPer30Second(uint16_t impulse_count) // grafikas scaled
 {
 	uint16_t xmean = 1248;
 	double stdev = 610.8, X_NORM, radiation;
 	X_NORM = ((impulse_count - xmean) * 1.0) / stdev;
-	radiation = p1_coefficient * X_NORM * X_NORM * X_NORM + p2_coefficient * X_NORM*X_NORM + p3_coefficient*X_NORM +p4_coefficient;
+	radiation = p1_coefficient * X_NORM * X_NORM * X_NORM + p2_coefficient * X_NORM * X_NORM + p3_coefficient * X_NORM + p4_coefficient;
 	return radiation;
-	//buffer 30s, tai gauname mikrorentgena per 30s
+	// buffer 30s, tai gauname mikrorentgena per 30s
 }
 float uRoentgenPer30SecondTouSievertsPerHour(float radiation)
 {
-	return radiation*2*60/115;
+	return radiation * 2 * 60 / 115;
 }
 
 void calculation_thread(void *arg1, void *arg2, void *arg3)
 {
-    printk("Calculation thread started\r\n");
-    while (1) {
-		k_sem_take(&semaphore_update_timer, K_FOREVER);//LAUKIAMA semaforo is taimerio, po to atliekami skaiciavimai siame
-
+	printk("Calculation thread started\r\n");
+	while (1)
+	{
+		k_sem_take(&semaphore_update_timer, K_FOREVER); // LAUKIAMA semaforo is taimerio, po to atliekami skaiciavimai siame
 
 		static uint32_t timestamp;
 		timestamp = k_cycle_get_32();
 		radiation = uRoentgenPer30SecondTouSievertsPerHour(Impulses_to_uRoentgenPer30Second(MA_FILTER.impulse_sum)); // per 30 sekundziu gauta radiacija
-		if(radiation < 1)// konvertuojame i  nanosievertus
+		if (radiation < 1)																							 // konvertuojame i  nanosievertus
 		{
 			Indication_value = NANO;
-			radiation = radiation*1000;
+			radiation = radiation * 1000;
 		}
 		else
 		{
@@ -257,7 +274,7 @@ void calculation_thread(void *arg1, void *arg2, void *arg3)
 		}
 		int int_part = (int)radiation;
 		int frac_part = (int)((radiation - int_part) * (float)10.0);
-		if(Indication_value == MICRO)
+		if (Indication_value == MICRO)
 		{
 			printk("tim callback, radiation(MICRO) = %d.%1d at %u\r\n", int_part, frac_part, timestamp);
 		}
@@ -268,26 +285,26 @@ void calculation_thread(void *arg1, void *arg2, void *arg3)
 		bt_payload.radiation = radiation;
 		bt_payload.indication = Indication_value;
 		k_work_submit(&bt_update_work);
-		Impulse_counter = 0;
-		MA_FILTER.impulse_sum -= MA_FILTER.buffer[MA_FILTER.counter];//slankusis, priekyje esancia verte atimti, taciau po to, kai atlikti skaiciavimai, nes tada paimsim tik 4
-		
-	    if(Impulse_counter > 10) // kai per sekunde daugiau nei 10 impulsu
+		if (Impulse_counter > 10) // kai per sekunde daugiau nei 10 impulsu
 		{
-			gpio_pin_set_dt(&buzzer,1); // kaukia software buzzer
+			gpio_pin_set_dt(&buzzer, 1); // kaukia software buzzer
 		}
-		else gpio_pin_set_dt(&buzzer,0);
-    }
+		else gpio_pin_set_dt(&buzzer, 0);
+		Impulse_counter = 0;
+		MA_FILTER.impulse_sum -= MA_FILTER.buffer[MA_FILTER.counter]; // slankusis, priekyje esancia verte atimti, taciau po to, kai atlikti skaiciavimai, nes tada paimsim tik 4
+
+	}
 }
 
 void work_function(struct k_work *work)
 {
-	k_sem_give(&semaphore_update_timer);//WORKQUEUE gija duoda semafora, jog kita gija galetu atlikti skaiciavimus, daroma sitaip, nes per ISR negalima iskviesti kitos gijos (0 prioritetas)
+	k_sem_give(&semaphore_update_timer); // WORKQUEUE gija duoda semafora, jog kita gija galetu atlikti skaiciavimus, daroma sitaip, nes per ISR negalima iskviesti kitos gijos (0 prioritetas)
 }
 
 uint8_t initialise_gpio_timer_button()
 {
 	uint8_t ret = 1;
-		if (!gpio_is_ready_dt(&button))
+	if (!gpio_is_ready_dt(&button))
 	{
 		printk("Error: button device %s is not ready\n",
 			   button.port->name);
@@ -330,7 +347,7 @@ uint8_t initialise_gpio_timer_button()
 		led_BT_conn_status.port = NULL;
 		return 0;
 	}
-		if (led_BT_conn_status.port)
+	if (led_BT_conn_status.port)
 	{
 		ret = gpio_pin_configure_dt(&led_BT_conn_status, GPIO_OUTPUT);
 		if (ret != 0)
@@ -345,7 +362,7 @@ uint8_t initialise_gpio_timer_button()
 			printk("Set up LED at %s pin %d\n", led_BT_conn_status.port->name, led_BT_conn_status.pin);
 		}
 	}
-		if (led.port && !gpio_is_ready_dt(&led))
+	if (led.port && !gpio_is_ready_dt(&led))
 	{
 		printk("Error %d: LED device %s is not ready; ignoring it\n",
 			   ret, led.port->name);
@@ -372,46 +389,47 @@ uint8_t initialise_gpio_timer_button()
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
-	if (err) {
+	if (err)
+	{
 		printk("Connection failed, err 0x%02x %s\n", err, bt_hci_err_to_str(err));
 		return;
 	}
 	printk("Connected\n");
-	
+
 	my_conn = bt_conn_ref(conn);
 
 	err = bt_conn_get_info(conn, &info);
-	if (err) {
+	if (err)
+	{
 		LOG_ERR("bt_conn_get_info() returned %d", err);
 		return;
 	}
 
-
-	gpio_pin_set(led_BT_conn_status.port,led_BT_conn_status.pin,GPIO_ACTIVE_LOW);
+	gpio_pin_set(led_BT_conn_status.port, led_BT_conn_status.pin, GPIO_ACTIVE_LOW);
 	BT_connected = true;
-
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	printk("Disconnected, reason 0x%02x %s\n", reason, bt_hci_err_to_str(reason));
 
-	gpio_pin_set(led_BT_conn_status.port,led_BT_conn_status.pin,GPIO_ACTIVE_HIGH);
+	gpio_pin_set(led_BT_conn_status.port, led_BT_conn_status.pin, GPIO_ACTIVE_HIGH);
 	BT_connected = false;
 	bt_conn_unref(my_conn);
+	my_conn = NULL;
 }
 
 static void bt_update_handler(struct k_work *work)
 {
-	send_value_bt(bt_payload.radiation,bt_payload.indication);
+	send_value_bt(bt_payload.radiation, bt_payload.indication);
 }
-bool bt_param_requirements (struct bt_conn *conn, struct bt_le_conn_param *param)
+bool bt_param_requirements(struct bt_conn *conn, struct bt_le_conn_param *param)
 {
 	return true;
 }
-void bt_param_updates (struct bt_conn *conn, uint16_t interval, uint16_t latency, uint16_t timeout)
+void bt_param_updates(struct bt_conn *conn, uint16_t interval, uint16_t latency, uint16_t timeout)
 {
-	printk("Param updates: interval:%d, latency:%d, timeout:%d\n",interval,latency,timeout);
+	printk("Param updates: interval:%d, latency:%d, timeout:%d\n", interval, latency, timeout);
 }
 
 static void auth_cancel(struct bt_conn *conn)
@@ -438,13 +456,13 @@ static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	if(reason == BT_SECURITY_ERR_AUTH_REQUIREMENT)
+	if (reason == BT_SECURITY_ERR_AUTH_REQUIREMENT)
 	{
-		int err;
-		bt_unpair(BT_ID_DEFAULT,BT_ADDR_LE_ANY);
-		return;
+		int err = 0;
+		bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
 		bt_ready(err);
-		if(err)
+		return;
+		if (err)
 		{
 			printk("Pairing failed, of AUTH requirements");
 		}
@@ -454,22 +472,26 @@ static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 
 static bool send_value_bt(float value, enum indicator_value indication)
 {
-	if(!BT_connected)
+	if (!BT_connected)
 	{
 		return false;
 	}
 	char msg[20];
-	sprintf(msg,"%1.1f",(double)value);
+	sprintf(msg, "%1.1f", (double)value);
 	int err = 0;
+    //err = bt_gatt_notify(my_conn, attrVal, msg, strlen(msg));
 	err = bt_nsms_set_status(&nsms_radiation, msg);
-	if (err != 0) {
-		//printk("NSMS set radiation failed, err: %d\n", err);
+	if (err != 0)
+	{
+		// printk("NSMS set radiation failed, err: %d\n", err);
 		return false;
 	}
-	sprintf(msg,"%s",indicator_name[indication]);
+	sprintf(msg, "%s", indicator_name[indication]);
+    //err = bt_gatt_notify(my_conn, attrIdx, msg, strlen(msg));
 	err = bt_nsms_set_status(&nsms_radiation_unit, msg);
-	if (err != 0) {
-		//printk("NSMS set unit failed, err: %d\n", err);
+	if (err != 0)
+	{
+		// printk("NSMS set unit failed, err: %d\n", err);
 		return false;
 	}
 	return true;
@@ -480,25 +502,61 @@ static void bt_ready(int err)
 	printk("Bluetooth initialized\n");
 
 	err = settings_load();
-    if (err) printk("Settings load failed (%d)\n", err);
+	if (err)
+		printk("Settings load failed (%d)\n", err);
 
 	err = bt_conn_auth_cb_register(&conn_auth_callbacks);
-	if (err) {
+	if (err)
+	{
 		printk("Authentication cb register error (err %d)\n", err);
 		return;
 	}
 	err = bt_conn_auth_info_cb_register(&conn_auth_info_callbacks);
-	if (err) {
+	if (err)
+	{
 		printk("Authentication cb register info error (err %d)\n", err);
 		return;
 	}
-		err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad),
-			      sd, ARRAY_SIZE(sd));
-	if (err) {
+	err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad),
+						  sd, ARRAY_SIZE(sd));
+	if (err)
+	{
 		printk("Advertising failed to start (err %d)\n", err);
 		return;
 	}
-	
-	
+
 	printk("Advertising successfully started\n");
+}
+
+static ssize_t bt_read_radiation_value(struct bt_conn *conn,
+								 const struct bt_gatt_attr *attr,
+								 void *buf, uint16_t len,
+								 uint16_t offset)
+{
+	float *value = attr->user_data;
+	char str_val[10];
+	snprintf(str_val, sizeof(str_val), "%.1f", *value);
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, str_val, strlen(str_val));
+}
+static ssize_t bt_read_radiation_format(struct bt_conn *conn,
+								 const struct bt_gatt_attr *attr,
+								 void *buf, uint16_t len,
+								 uint16_t offset)
+{
+	enum indicator_value VALUE = *(enum indicator_value *)attr->user_data;
+	char buffer[10];
+	if(VALUE == NANO)
+	{
+		sprintf(buffer,"nSv/h");
+	}
+	else
+	{
+		sprintf(buffer,"uSv/h");
+	}
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, buffer, strlen(buffer));
+}
+static void myRadiation_ccc_cfg_changed(const struct bt_gatt_attr *attr,uint16_t value)
+{
+	notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+    printk("Radiation notifications %s\n", notif_enabled ? "enabled" : "disabled");
 }

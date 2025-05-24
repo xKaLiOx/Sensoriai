@@ -38,6 +38,7 @@ static struct k_work bt_update_work;
 volatile uint16_t Impulse_counter = 0;
 volatile float radiation = 0;
 volatile bool BT_connected;
+bool notif_enabled = false;
 
 void button_pressed(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
 float Impulses_to_uRoentgenPer30Second(uint16_t impulse_count);
@@ -60,4 +61,13 @@ static void pairing_complete(struct bt_conn *conn, bool bonded);
 static void auth_cancel(struct bt_conn *conn);
 static bool send_value_bt(float value, enum indicator_value indication);
 static void bt_ready(int err);
+static ssize_t bt_read_radiation_value(struct bt_conn *conn,
+                              const struct bt_gatt_attr *attr,
+                              void *buf, uint16_t len,
+                              uint16_t offset);
+static ssize_t bt_read_radiation_format(struct bt_conn *conn,
+                              const struct bt_gatt_attr *attr,
+                              void *buf, uint16_t len,
+                              uint16_t offset);
+static void myRadiation_ccc_cfg_changed(const struct bt_gatt_attr *attr,uint16_t value);
 
