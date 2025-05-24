@@ -53,4 +53,11 @@ struct k_sem semaphore_update_timer;
 static void connected(struct bt_conn *conn, uint8_t err);
 static void disconnected(struct bt_conn *conn, uint8_t err);
 static void bt_update_handler(struct k_work *work);
+void bt_param_updates (struct bt_conn *conn, uint16_t interval, uint16_t latency, uint16_t timeout);
+bool bt_param_requirements (struct bt_conn *conn, struct bt_le_conn_param *param);
+static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason);
+static void pairing_complete(struct bt_conn *conn, bool bonded);
+static void auth_cancel(struct bt_conn *conn);
+static bool send_value_bt(float value, enum indicator_value indication);
+static void bt_ready(int err);
 

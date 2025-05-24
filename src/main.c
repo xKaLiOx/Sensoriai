@@ -25,6 +25,7 @@
 #include <inttypes.h>
 #include <zephyr/irq.h>
 #include <nrfx_timer.h>
+#include <nrfx_log.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/hci.h>
@@ -45,28 +46,6 @@ K_THREAD_STACK_DEFINE(my_workqueue_stack, STACK_SIZE);
 BT_NSMS_DEF(nsms_radiation, "Radiation", false, "Unknown", BUF_SIZE);
 BT_NSMS_DEF(nsms_radiation_unit, "Units", false, "nSv/h", 10);
 
-static bool send_value_bt(float value, enum indicator_value indication)
-{
-	if(!BT_connected)
-	{
-		return false;
-	}
-	char msg[20];
-	sprintf(msg,"%1.1f",(double)value);
-	int err = 0;
-	err = bt_nsms_set_status(&nsms_radiation, msg);
-	if (err != 0) {
-		printk("NSMS set radiation failed, err: %d\n", err);
-		return false;
-	}
-	sprintf(msg,"%s",indicator_name[indication]);
-	err = bt_nsms_set_status(&nsms_radiation_unit, msg);
-	if (err != 0) {
-		printk("NSMS set unit failed, err: %d\n", err);
-		return false;
-	}
-	return true;
-}
 
 /*
  * Get button configuration from the devicetree sw0 alias. This is mandatory.
@@ -85,6 +64,8 @@ static const nrfx_timer_t my_timer = NRFX_TIMER_INSTANCE(21);
 
 static struct bt_update_payload bt_payload;
 static struct k_work bt_update_work;
+struct bt_conn_info info;
+struct bt_conn* my_conn;
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -98,9 +79,20 @@ static const struct bt_data sd[] = {
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected        = connected,
 	.disconnected     = disconnected,
+	.le_param_req     = bt_param_requirements,
+	.le_param_updated = bt_param_updates
 };
-//static struct bt_conn_auth_cb conn_auth_callbacks;
-//static struct bt_conn_auth_info_cb conn_auth_info_callbacks;
+static struct bt_conn_auth_cb conn_auth_callbacks  = {
+	.passkey_display = NULL,
+	.passkey_confirm = NULL,
+	.cancel = auth_cancel,
+	.pairing_confirm = NULL,
+
+};
+static struct bt_conn_auth_info_cb conn_auth_info_callbacks = {
+	.pairing_complete = pairing_complete,
+	.pairing_failed = pairing_failed
+};
 
 int main(void)
 {
@@ -130,8 +122,6 @@ int main(void)
 		{
 		};
 	}
-	
-	
 
 	gpio_init_callback(&button_cb_data, button_pressed, BIT(button.pin));
 	gpio_add_callback(button.port, &button_cb_data);
@@ -144,21 +134,10 @@ int main(void)
 
 	timer21_init();
 
-	int err = bt_enable(NULL);
+	int err = bt_enable(bt_ready);
 	if (err) {
 		printk("Bluetooth init failed (err %d)\n", err);
-		return 0;
 	}
-	printk("Bluetooth initialized\n");
-
-		err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad),
-			      sd, ARRAY_SIZE(sd));
-	if (err) {
-		printk("Advertising failed to start (err %d)\n", err);
-		return 0;
-	}
-
-	printk("Advertising successfully started\n");
 
 	if (led.port)
 	{
@@ -397,11 +376,20 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		printk("Connection failed, err 0x%02x %s\n", err, bt_hci_err_to_str(err));
 		return;
 	}
-
 	printk("Connected\n");
+	
+	my_conn = bt_conn_ref(conn);
+
+	err = bt_conn_get_info(conn, &info);
+	if (err) {
+		LOG_ERR("bt_conn_get_info() returned %d", err);
+		return;
+	}
+
 
 	gpio_pin_set(led_BT_conn_status.port,led_BT_conn_status.pin,GPIO_ACTIVE_LOW);
 	BT_connected = true;
+
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
@@ -410,9 +398,107 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	gpio_pin_set(led_BT_conn_status.port,led_BT_conn_status.pin,GPIO_ACTIVE_HIGH);
 	BT_connected = false;
+	bt_conn_unref(my_conn);
 }
 
 static void bt_update_handler(struct k_work *work)
 {
 	send_value_bt(bt_payload.radiation,bt_payload.indication);
+}
+bool bt_param_requirements (struct bt_conn *conn, struct bt_le_conn_param *param)
+{
+	return true;
+}
+void bt_param_updates (struct bt_conn *conn, uint16_t interval, uint16_t latency, uint16_t timeout)
+{
+	printk("Param updates: interval:%d, latency:%d, timeout:%d\n",interval,latency,timeout);
+}
+
+static void auth_cancel(struct bt_conn *conn)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
+	printk("Pairing cancelled\n");
+}
+
+static void pairing_complete(struct bt_conn *conn, bool bonded)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
+	printk("Pairing completed\n");
+}
+
+static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
+	if(reason == BT_SECURITY_ERR_AUTH_REQUIREMENT)
+	{
+		int err;
+		bt_unpair(BT_ID_DEFAULT,BT_ADDR_LE_ANY);
+		return;
+		bt_ready(err);
+		if(err)
+		{
+			printk("Pairing failed, of AUTH requirements");
+		}
+	}
+	printk("Pairing failed, reason %d\n", reason);
+}
+
+static bool send_value_bt(float value, enum indicator_value indication)
+{
+	if(!BT_connected)
+	{
+		return false;
+	}
+	char msg[20];
+	sprintf(msg,"%1.1f",(double)value);
+	int err = 0;
+	err = bt_nsms_set_status(&nsms_radiation, msg);
+	if (err != 0) {
+		//printk("NSMS set radiation failed, err: %d\n", err);
+		return false;
+	}
+	sprintf(msg,"%s",indicator_name[indication]);
+	err = bt_nsms_set_status(&nsms_radiation_unit, msg);
+	if (err != 0) {
+		//printk("NSMS set unit failed, err: %d\n", err);
+		return false;
+	}
+	return true;
+}
+
+static void bt_ready(int err)
+{
+	printk("Bluetooth initialized\n");
+
+	err = settings_load();
+    if (err) printk("Settings load failed (%d)\n", err);
+
+	err = bt_conn_auth_cb_register(&conn_auth_callbacks);
+	if (err) {
+		printk("Authentication cb register error (err %d)\n", err);
+		return;
+	}
+	err = bt_conn_auth_info_cb_register(&conn_auth_info_callbacks);
+	if (err) {
+		printk("Authentication cb register info error (err %d)\n", err);
+		return;
+	}
+		err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad),
+			      sd, ARRAY_SIZE(sd));
+	if (err) {
+		printk("Advertising failed to start (err %d)\n", err);
+		return;
+	}
+	
+	
+	printk("Advertising successfully started\n");
 }
