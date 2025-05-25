@@ -1,0 +1,12 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "nrf-connect",
+			"request": "launch",
+			"name": "Launch Sensoriai\\build",
+			"config": "c:/ncs/NRF_projektai/workspace/Sensoriai/build",
+			"runToEntryPoint": "main"
+		}
+	]
+}

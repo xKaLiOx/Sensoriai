@@ -61,42 +61,6 @@ BT_NSMS_DEF(nsms_radiation_unit, "Units", false, "nSv/h", 10);
 #define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
 #define SW0_NODE DT_ALIAS(sw0)
 
-static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET_OR(SW0_NODE, gpios, {0});
-static const struct gpio_dt_spec buzzer = GPIO_DT_SPEC_GET(DT_N_NODELABEL_my_buzzer_external, buzzer_gpios);
-static struct gpio_callback button_cb_data;
-
-static struct gpio_dt_spec led = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led0), gpios, {0});
-static struct gpio_dt_spec led_BT_conn_status = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led3), gpios, {0}); // BT run LED
-static const nrfx_timer_t my_timer = NRFX_TIMER_INSTANCE(21);
-
-static struct bt_update_payload bt_payload;
-static struct k_work bt_update_work;
-struct bt_conn_info info;
-struct bt_conn *my_conn;
-
-BT_GATT_SERVICE_DEFINE(my_radiation_svc, BT_GATT_PRIMARY_SERVICE(BT_UUID_RAD_SVC),
-					   BT_GATT_CHARACTERISTIC(BT_UUID_RAD,
-											  BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-											  BT_GATT_PERM_READ | BT_GATT_PERM_NONE, bt_read_radiation_value, NULL,
-											  &bt_payload.radiation),
-					   BT_GATT_CCC(myRadiation_ccc_cfg_changed,
-								   BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
-					   BT_GATT_CHARACTERISTIC(BT_UUID_IDX,
-											  BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-											  BT_GATT_PERM_READ | BT_GATT_PERM_NONE, bt_read_radiation_format, NULL,
-											  &bt_payload.indication),
-					   BT_GATT_CCC(myRadiation_ccc_cfg_changed,
-								   BT_GATT_PERM_READ | BT_GATT_PERM_WRITE));
-
-static const struct bt_data ad[] = {
-	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
-};
-
-static const struct bt_data sd[] = {
-	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_RAD_SVC_VAL),
-};
-
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
@@ -109,11 +73,58 @@ static struct bt_conn_auth_cb conn_auth_callbacks = {
 	.passkey_confirm = NULL,
 	.cancel = auth_cancel,
 	.pairing_confirm = NULL,
-
 };
 static struct bt_conn_auth_info_cb conn_auth_info_callbacks = {
 	.pairing_complete = pairing_complete,
 	.pairing_failed = pairing_failed};
+
+static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET_OR(SW0_NODE, gpios, {0});
+static const struct gpio_dt_spec buzzer = GPIO_DT_SPEC_GET(DT_N_NODELABEL_external_user, buzzer_gpios);
+static const struct gpio_dt_spec impulse_counting = GPIO_DT_SPEC_GET(DT_N_NODELABEL_external_user, impulse_counter_gpios);
+static struct gpio_callback button_cb_data0;
+static struct gpio_callback button_cb_data1;
+
+
+static struct gpio_dt_spec led = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led0), gpios, {0});
+static struct gpio_dt_spec led_BT_conn_status = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led3), gpios, {0}); // BT run LED
+static const nrfx_timer_t my_timer = NRFX_TIMER_INSTANCE(21);
+
+static struct bt_update_payload bt_payload= {0};;
+static struct k_work bt_update_work;
+struct bt_conn_info info;
+struct bt_conn *my_conn=NULL;
+
+BT_GATT_SERVICE_DEFINE(my_radiation_svc, BT_GATT_PRIMARY_SERVICE(BT_UUID_RAD_SVC),
+					   BT_GATT_CHARACTERISTIC(BT_UUID_RAD,
+											  BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+											  BT_GATT_PERM_READ | BT_GATT_PERM_NONE, bt_read_radiation_value, NULL,
+											  &bt_payload.radiation),
+					   BT_GATT_CCC(myRadiation_value_ccc_cfg_changed,
+								   BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+					   BT_GATT_CHARACTERISTIC(BT_UUID_IDX,
+											  BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+											  BT_GATT_PERM_READ | BT_GATT_PERM_NONE, bt_read_radiation_format, NULL,
+											  &bt_payload.indication),
+					   BT_GATT_CCC(myRadiation_format_ccc_cfg_changed,
+								   BT_GATT_PERM_READ | BT_GATT_PERM_WRITE));
+
+static const struct bt_data ad[] = {
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+};
+
+static const struct bt_data sd[] = {
+	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_RAD_SVC_VAL),
+};
+
+/* static const struct bt_data ad1[] = {
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+};
+
+static const struct bt_data sd1[] = {
+	BT_DATA_BYTES(0),
+}; */
 
 int main(void)
 {
@@ -145,25 +156,55 @@ int main(void)
 		};
 	}
 
-	gpio_init_callback(&button_cb_data, button_pressed, BIT(button.pin));
-	gpio_add_callback(button.port, &button_cb_data);
-	printk("Set up button at %s pin %d\n", button.port->name, button.pin);
+	gpio_init_callback(&button_cb_data0, button_pressed, BIT(button.pin));
+	ret = gpio_add_callback(button.port, &button_cb_data0);
+	if(!ret)
+	{
+		printk("Set up button interrupt at %s pin %d\n", button.port->name, button.pin);
+	}
+	gpio_init_callback(&button_cb_data1, button_pressed, BIT(impulse_counting.pin));
+	ret = gpio_add_callback(impulse_counting.port, &button_cb_data1);
+	if(!ret)
+	{
+		printk("Set up counter interrupt at %s pin %d\n", impulse_counting.port->name, impulse_counting.pin);
+	}
 
 	// Start buzzer for 1s
 	gpio_pin_set_dt(&buzzer, 1);
 	k_msleep(1000);
 	gpio_pin_set_dt(&buzzer, 0);
+	k_msleep(1000);
+	gpio_pin_set_dt(&buzzer, 1);
+	k_msleep(1000);
+	gpio_pin_set_dt(&buzzer, 0);
+
+
+	int err = bt_enable(NULL);
+	if (err != 0)
+	{
+		printk("Bluetooth enable failed (err %d)\n", err);
+	}
+
+	k_msleep(10);
+	
+/* 	err = settings_load(); //AAAHHHH THIS ERROR WAS PAIN
+	if (err)
+	{
+		printk("Settings load failed (%d)\n", err);
+		return -1;
+	} */
+
+	if (bt_ready() != 0)
+	{
+		printk("Bluetooth configuration failed\n");
+	}
 
 	timer21_init();
 
-	int err = bt_enable(bt_ready);
-	if (err)
+
+	while (1)
 	{
-		printk("Bluetooth init failed (err %d)\n", err);
-	}
-	while(1)
-	{
-		k_sleep(K_SECONDS(5));
+		k_sleep(K_SECONDS(1));
 	}
 	return 0;
 }
@@ -289,10 +330,10 @@ void calculation_thread(void *arg1, void *arg2, void *arg3)
 		{
 			gpio_pin_set_dt(&buzzer, 1); // kaukia software buzzer
 		}
-		else gpio_pin_set_dt(&buzzer, 0);
+		else
+			gpio_pin_set_dt(&buzzer, 0);
 		Impulse_counter = 0;
 		MA_FILTER.impulse_sum -= MA_FILTER.buffer[MA_FILTER.counter]; // slankusis, priekyje esancia verte atimti, taciau po to, kai atlikti skaiciavimai, nes tada paimsim tik 4
-
 	}
 }
 
@@ -310,15 +351,15 @@ uint8_t initialise_gpio_timer_button()
 			   button.port->name);
 		return 0;
 	}
-	if (!device_is_ready(buzzer.port))
+	if (!device_is_ready(buzzer.port))// all the same port
 	{
 		printk("Buzzer GPIO device not ready\n");
 		return 0;
 	}
-	ret = gpio_pin_configure_dt(&button, GPIO_INPUT);
+	ret = gpio_pin_configure_dt(&impulse_counting, GPIO_INPUT);
 	if (ret != 0)
 	{
-		printk("Error configuring button pin\n");
+		printk("Error configuring counting pin\n");
 		return 0;
 	}
 	ret = gpio_pin_configure_dt(&buzzer, GPIO_OUTPUT_INACTIVE);
@@ -327,13 +368,21 @@ uint8_t initialise_gpio_timer_button()
 		printk("Error configuring buzzer pin\n");
 		return 0;
 	}
+	ret = gpio_pin_configure_dt(&button, GPIO_INPUT);
 	if (ret != 0)
 	{
-		printk("Error %d: failed to configure %s pin %d\n",
+		printk("Error %d: failed to configure button as input on %s pin %d",
 			   ret, button.port->name, button.pin);
 		return 0;
 	}
 	ret = gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_TO_ACTIVE);
+	if (ret != 0)
+	{
+		printk("Error %d: failed to configure interrupt on %s pin %d\n",
+			   ret, button.port->name, button.pin);
+		return 0;
+	}
+	ret = gpio_pin_interrupt_configure_dt(&impulse_counting, GPIO_INT_EDGE_TO_ACTIVE);
 	if (ret != 0)
 	{
 		printk("Error %d: failed to configure interrupt on %s pin %d\n",
@@ -395,9 +444,12 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		return;
 	}
 	printk("Connected\n");
-
-	my_conn = bt_conn_ref(conn);
-
+	
+    if (my_conn) {
+        bt_conn_unref(my_conn);
+    }
+    my_conn = bt_conn_ref(conn);
+	
 	err = bt_conn_get_info(conn, &info);
 	if (err)
 	{
@@ -415,6 +467,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	gpio_pin_set(led_BT_conn_status.port, led_BT_conn_status.pin, GPIO_ACTIVE_HIGH);
 	BT_connected = false;
+	bt_le_adv_stop();
 	bt_conn_unref(my_conn);
 	my_conn = NULL;
 }
@@ -458,11 +511,8 @@ static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 
 	if (reason == BT_SECURITY_ERR_AUTH_REQUIREMENT)
 	{
-		int err = 0;
 		bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
-		bt_ready(err);
-		return;
-		if (err)
+		if (bt_ready() != 0)
 		{
 			printk("Pairing failed, of AUTH requirements");
 		}
@@ -472,66 +522,75 @@ static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 
 static bool send_value_bt(float value, enum indicator_value indication)
 {
-	if (!BT_connected)
+	if (!BT_connected | !my_conn)
 	{
 		return false;
 	}
 	char msg[20];
 	sprintf(msg, "%1.1f", (double)value);
 	int err = 0;
-    //err = bt_gatt_notify(my_conn, attrVal, msg, strlen(msg));
-	err = bt_nsms_set_status(&nsms_radiation, msg);
-	if (err != 0)
+	if (notif_enabled_val)
 	{
-		// printk("NSMS set radiation failed, err: %d\n", err);
-		return false;
+		if (bt_gatt_is_subscribed(my_conn, &my_radiation_svc.attrs[RAD_CHAR_ATTR_INDEX], BT_GATT_CCC_NOTIFY))
+		{
+			err = bt_gatt_notify(my_conn, &my_radiation_svc.attrs[RAD_CHAR_ATTR_INDEX], msg, strlen(msg));
+			if (err)
+			{
+				printk("NOTIFY ERROR for format \n");
+			}
+		}
 	}
+	k_sleep(K_MSEC(10));
+	bt_nsms_set_status(&nsms_radiation, msg);
+	k_sleep(K_MSEC(10));
 	sprintf(msg, "%s", indicator_name[indication]);
-    //err = bt_gatt_notify(my_conn, attrIdx, msg, strlen(msg));
-	err = bt_nsms_set_status(&nsms_radiation_unit, msg);
-	if (err != 0)
+	if (notif_enabled_format)
 	{
-		// printk("NSMS set unit failed, err: %d\n", err);
-		return false;
+		if (bt_gatt_is_subscribed(my_conn, &my_radiation_svc.attrs[IDX_CHAR_ATTR_INDEX], BT_GATT_CCC_NOTIFY))
+		{
+		err = bt_gatt_notify(my_conn, &my_radiation_svc.attrs[IDX_CHAR_ATTR_INDEX], msg, strlen(msg));
+		if(err)
+		{
+			printk("NOTIFY ERROR for format \n");
+		}
+		}
 	}
+	k_sleep(K_MSEC(10));
+	bt_nsms_set_status(&nsms_radiation_unit, msg);
 	return true;
 }
 
-static void bt_ready(int err)
+static int bt_ready(void)
 {
-	printk("Bluetooth initialized\n");
-
-	err = settings_load();
-	if (err)
-		printk("Settings load failed (%d)\n", err);
-
+	int err;
 	err = bt_conn_auth_cb_register(&conn_auth_callbacks);
-	if (err)
+	if (err != 0)
 	{
 		printk("Authentication cb register error (err %d)\n", err);
-		return;
+		return -1;
 	}
 	err = bt_conn_auth_info_cb_register(&conn_auth_info_callbacks);
-	if (err)
+	if (err != 0)
 	{
 		printk("Authentication cb register info error (err %d)\n", err);
-		return;
+		return -1;
 	}
 	err = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad),
 						  sd, ARRAY_SIZE(sd));
-	if (err)
+	/* err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, NULL, 0, NULL, 0); */
+	if (err != 0)
 	{
 		printk("Advertising failed to start (err %d)\n", err);
-		return;
+		return -1;
 	}
-
-	printk("Advertising successfully started\n");
+	printk("Bluetooth initialized\n");
+	return 0;
 }
 
 static ssize_t bt_read_radiation_value(struct bt_conn *conn,
-								 const struct bt_gatt_attr *attr,
-								 void *buf, uint16_t len,
-								 uint16_t offset)
+									   const struct bt_gatt_attr *attr,
+									   void *buf, uint16_t len,
+									   uint16_t offset)
 {
 	float *value = attr->user_data;
 	char str_val[10];
@@ -539,24 +598,29 @@ static ssize_t bt_read_radiation_value(struct bt_conn *conn,
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, str_val, strlen(str_val));
 }
 static ssize_t bt_read_radiation_format(struct bt_conn *conn,
-								 const struct bt_gatt_attr *attr,
-								 void *buf, uint16_t len,
-								 uint16_t offset)
+										const struct bt_gatt_attr *attr,
+										void *buf, uint16_t len,
+										uint16_t offset)
 {
 	enum indicator_value VALUE = *(enum indicator_value *)attr->user_data;
 	char buffer[10];
-	if(VALUE == NANO)
+	if (VALUE == NANO)
 	{
-		sprintf(buffer,"nSv/h");
+		sprintf(buffer, "nSv/h");
 	}
 	else
 	{
-		sprintf(buffer,"uSv/h");
+		sprintf(buffer, "uSv/h");
 	}
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, buffer, strlen(buffer));
 }
-static void myRadiation_ccc_cfg_changed(const struct bt_gatt_attr *attr,uint16_t value)
+static void myRadiation_value_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
-	notif_enabled = (value == BT_GATT_CCC_NOTIFY);
-    printk("Radiation notifications %s\n", notif_enabled ? "enabled" : "disabled");
+	notif_enabled_val = (value == BT_GATT_CCC_NOTIFY);
+	printk("Radiation notification for value %s\n", notif_enabled_val ? "enabled" : "disabled");
+}
+static void myRadiation_format_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+	notif_enabled_format = (value == BT_GATT_CCC_NOTIFY);
+	printk("Radiation notifications for format %s\n", notif_enabled_format ? "enabled" : "disabled");
 }
