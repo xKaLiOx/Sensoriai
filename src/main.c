@@ -465,7 +465,6 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	gpio_pin_set(led_BT_conn_status.port, led_BT_conn_status.pin, GPIO_ACTIVE_HIGH);
 	BT_connected = false;
-	bt_le_adv_stop();
 	bt_conn_unref(my_conn);
 	my_conn = NULL;
 }
