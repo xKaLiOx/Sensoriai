@@ -128,7 +128,6 @@ static const struct bt_data sd1[] = {
 
 int main(void)
 {
-	printk("hello\n");
 	k_work_queue_start(&my_workqueue_data, my_workqueue_stack, K_THREAD_STACK_SIZEOF(my_workqueue_stack), 6, NULL);
 	k_work_init(&my_work, work_function);
 	k_work_init(&bt_update_work, bt_update_handler);
@@ -456,7 +455,6 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		LOG_ERR("bt_conn_get_info() returned %d", err);
 		return;
 	}
-
 	gpio_pin_set(led_BT_conn_status.port, led_BT_conn_status.pin, GPIO_ACTIVE_LOW);
 	BT_connected = true;
 }
